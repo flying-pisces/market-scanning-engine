@@ -1,0 +1,53 @@
+# Market Scanning Engine - Core Requirements
+# Production dependencies for the market scanning engine
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Data Models & Validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.23
+alembic==1.12.1
+
+# Data Processing
+pandas==2.1.4
+numpy==1.25.2
+pyarrow==14.0.1
+
+# Message Queue
+confluent-kafka==2.3.0
+
+# Caching
+redis[hiredis]==5.0.1
+aioredis==2.0.1
+
+# HTTP Clients
+aiohttp==3.9.1
+httpx==0.25.2
+
+# Time Series Database (Optional)
+influxdb-client[async]==1.39.0
+
+# Monitoring
+prometheus-client==0.19.0
+structlog==23.2.0
+
+# Utilities
+python-multipart==0.0.6
+python-json-logger==2.0.7
+tenacity==8.2.3
+schedule==1.2.0
+croniter==2.0.1
+
+# Development Dependencies (for local development)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+black==23.11.0
+isort==5.12.0
+mypy==1.7.1

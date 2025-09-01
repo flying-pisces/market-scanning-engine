@@ -1,0 +1,524 @@
+name: Market Scanning Engine CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, feature/* ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: 'Skip test execution'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  IMAGE_PREFIX: market-scanning
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  # Code Quality and Security Scanning
+  code_quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    outputs:
+      security_issues: ${{ steps.security_scan.outputs.issues_found }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black isort flake8 mypy bandit safety pre-commit
+          pip install -r services/data-ingestion/requirements.txt
+
+      - name: Run code formatting checks
+        run: |
+          black --check --diff services/
+          isort --check-only --diff services/
+
+      - name: Run linting
+        run: |
+          flake8 services/ --max-line-length=100 --ignore=E203,W503
+          
+      - name: Run type checking
+        run: |
+          mypy services/ --ignore-missing-imports --strict-optional
+
+      - name: Security scan with Bandit
+        id: security_scan
+        run: |
+          bandit -r services/ -f json -o bandit-report.json || true
+          issues=$(jq '.results | length' bandit-report.json || echo "0")
+          echo "issues_found=$issues" >> $GITHUB_OUTPUT
+          if [ "$issues" -gt "0" ]; then
+            echo "::warning::Found $issues security issues"
+            jq -r '.results[] | "::warning file=\(.filename),line=\(.line_number)::\(.issue_text)"' bandit-report.json
+          fi
+
+      - name: Dependency vulnerability scan
+        run: |
+          safety check --json --output safety-report.json || true
+          
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+
+  # Unit and Integration Tests
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_tests }}
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_market_scanning
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+          
+      kafka:
+        image: confluentinc/cp-kafka:latest
+        env:
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        ports:
+          - 9092:9092
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio pytest-cov pytest-mock
+          pip install -r services/data-ingestion/requirements.txt
+          pip install -r services/signal-generation/requirements.txt
+
+      - name: Wait for services
+        run: |
+          timeout 60 bash -c 'until pg_isready -h localhost -p 5432; do sleep 1; done'
+          timeout 60 bash -c 'until redis-cli -h localhost -p 6379 ping; do sleep 1; done'
+
+      - name: Set up test environment
+        env:
+          POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/test_market_scanning
+          REDIS_URL: redis://localhost:6379/0
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        run: |
+          # Create test database schema
+          python -c "
+          import asyncpg
+          import asyncio
+          async def setup_db():
+              conn = await asyncpg.connect('postgresql://postgres:postgres@localhost:5432/test_market_scanning')
+              await conn.execute('CREATE SCHEMA IF NOT EXISTS market_data;')
+              await conn.close()
+          asyncio.run(setup_db())
+          "
+
+      - name: Run unit tests
+        env:
+          POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/test_market_scanning
+          REDIS_URL: redis://localhost:6379/0
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest tests/unit/ -v --cov=services --cov-report=xml --cov-report=html
+
+      - name: Run integration tests
+        env:
+          POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/test_market_scanning
+          REDIS_URL: redis://localhost:6379/0
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest tests/integration/ -v --cov=services --cov-append --cov-report=xml
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results
+          path: |
+            htmlcov/
+            pytest-report.xml
+
+  # Performance and Load Testing
+  performance_test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test images
+        run: |
+          docker-compose -f docker/docker-compose.yml build --parallel
+
+      - name: Start test environment
+        run: |
+          docker-compose -f docker/docker-compose.yml up -d
+          sleep 60  # Wait for services to be ready
+
+      - name: Run performance tests
+        run: |
+          # Install k6 for load testing
+          curl https://github.com/grafana/k6/releases/download/v0.46.0/k6-v0.46.0-linux-amd64.tar.gz -L | tar xvz --strip-components 1
+          
+          # Run load tests
+          ./k6 run --vus 50 --duration 5m tests/performance/load-test.js
+          ./k6 run --vus 100 --duration 2m tests/performance/stress-test.js
+
+      - name: Collect performance metrics
+        run: |
+          docker-compose -f docker/docker-compose.yml logs > performance-logs.txt
+          curl -s http://localhost:9090/api/v1/query?query=rate(http_requests_total[5m]) > prometheus-metrics.json
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results
+          path: |
+            performance-logs.txt
+            prometheus-metrics.json
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose -f docker/docker-compose.yml down
+
+  # Build and Push Docker Images
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [code_quality, test]
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        service: [data-ingestion, signal-generation, risk-assessment, notification-service]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/${{ matrix.service }}.Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # Security Scanning
+  security_scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        service: [data-ingestion, signal-generation, risk-assessment, notification-service]
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Deploy to Staging
+  deploy_staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, security_scan]
+    if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment:
+      name: staging
+      url: https://staging-api.market-scanning.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-east-1 --name market-scanning-staging
+
+      - name: Deploy to Kubernetes
+        run: |
+          # Update image tags in deployment manifests
+          sed -i "s|:latest|:${{ github.sha }}|g" infrastructure/k8s/*.yaml
+          
+          # Apply configurations
+          kubectl apply -f infrastructure/k8s/namespace.yaml
+          kubectl apply -f infrastructure/k8s/ -n market-scanning
+          
+          # Wait for rollout
+          kubectl rollout status deployment/data-ingestion -n market-scanning --timeout=300s
+          kubectl rollout status deployment/signal-generator -n market-scanning --timeout=300s
+          kubectl rollout status deployment/risk-assessment -n market-scanning --timeout=300s
+          kubectl rollout status deployment/notification-service -n market-scanning --timeout=300s
+
+      - name: Run smoke tests
+        run: |
+          # Wait for services to be ready
+          sleep 30
+          
+          # Test endpoints
+          kubectl port-forward -n market-scanning service/data-ingestion 8080:8080 &
+          sleep 5
+          
+          curl -f http://localhost:8080/health || exit 1
+          curl -f http://localhost:8080/ready || exit 1
+          
+          pkill -f "kubectl port-forward"
+
+      - name: Notify deployment success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: "✅ Market Scanning Engine deployed to staging successfully!"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Deploy to Production
+  deploy_production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy_staging]
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    environment:
+      name: production
+      url: https://api.market-scanning.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: us-east-1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-east-1 --name market-scanning-production
+
+      - name: Blue-Green Deployment
+        run: |
+          # Create green deployment
+          sed -i "s|:latest|:${{ github.sha }}|g" infrastructure/k8s/*.yaml
+          sed -i "s|market-scanning|market-scanning-green|g" infrastructure/k8s/*.yaml
+          
+          kubectl apply -f infrastructure/k8s/ -n market-scanning
+          
+          # Wait for green deployment
+          kubectl rollout status deployment/data-ingestion-green -n market-scanning --timeout=600s
+          kubectl rollout status deployment/signal-generator-green -n market-scanning --timeout=600s
+          
+          # Health checks
+          sleep 60
+          kubectl port-forward -n market-scanning service/data-ingestion-green 8080:8080 &
+          sleep 5
+          curl -f http://localhost:8080/health || exit 1
+          pkill -f "kubectl port-forward"
+          
+          # Switch traffic (update service selectors)
+          kubectl patch service data-ingestion -n market-scanning -p '{"spec":{"selector":{"version":"green"}}}'
+          kubectl patch service signal-generator -n market-scanning -p '{"spec":{"selector":{"version":"green"}}}'
+          kubectl patch service risk-assessment -n market-scanning -p '{"spec":{"selector":{"version":"green"}}}'
+          kubectl patch service notification-service -n market-scanning -p '{"spec":{"selector":{"version":"green"}}}'
+          
+          # Wait and verify
+          sleep 30
+          
+          # Remove old blue deployment
+          kubectl delete deployment data-ingestion -n market-scanning --ignore-not-found
+          kubectl delete deployment signal-generator -n market-scanning --ignore-not-found
+          kubectl delete deployment risk-assessment -n market-scanning --ignore-not-found
+          kubectl delete deployment notification-service -n market-scanning --ignore-not-found
+          
+          # Rename green to primary
+          kubectl patch deployment data-ingestion-green -n market-scanning -p '{"metadata":{"name":"data-ingestion"}}'
+
+      - name: Run production smoke tests
+        run: |
+          # Comprehensive health checks
+          for service in data-ingestion signal-generator risk-assessment notification-service; do
+            kubectl port-forward -n market-scanning service/$service 8080:8080 &
+            PID=$!
+            sleep 5
+            
+            curl -f http://localhost:8080/health || exit 1
+            curl -f http://localhost:8080/ready || exit 1
+            curl -f http://localhost:8080/metrics || exit 1
+            
+            kill $PID
+            sleep 2
+          done
+
+      - name: Update monitoring dashboards
+        run: |
+          # Update Grafana dashboards with new version
+          kubectl apply -f monitoring/grafana/dashboards/ -n market-scanning
+
+      - name: Notify deployment success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: "🚀 Market Scanning Engine v${{ github.sha }} deployed to production successfully!"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Rollback on Failure
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: failure() && (needs.deploy_staging.result == 'failure' || needs.deploy_production.result == 'failure')
+    needs: [deploy_staging, deploy_production]
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-east-1 --name market-scanning-staging
+
+      - name: Rollback deployment
+        run: |
+          kubectl rollout undo deployment/data-ingestion -n market-scanning
+          kubectl rollout undo deployment/signal-generator -n market-scanning
+          kubectl rollout undo deployment/risk-assessment -n market-scanning
+          kubectl rollout undo deployment/notification-service -n market-scanning
+
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: "⚠️ Market Scanning Engine deployment failed and has been rolled back!"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

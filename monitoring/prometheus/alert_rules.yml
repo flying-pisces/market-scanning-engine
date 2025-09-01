@@ -1,0 +1,290 @@
+# Prometheus Alert Rules for Market Scanning Engine
+# Critical alerts for financial data processing systems
+
+groups:
+  # Service Health Alerts
+  - name: service_health
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Service {{ $labels.job }} on {{ $labels.instance }} has been down for more than 30 seconds."
+          runbook_url: "https://runbooks.company.com/service-down"
+
+      - alert: ServiceHighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "High error rate for {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.job }} service."
+
+      - alert: ServiceHighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High latency for {{ $labels.job }}"
+          description: "95th percentile latency is {{ $value }}s for {{ $labels.job }}."
+
+  # Market Data Quality Alerts
+  - name: data_quality
+    rules:
+      - alert: DataIngestionStopped
+        expr: increase(market_data_messages_processed_total[5m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: data_ingestion
+        annotations:
+          summary: "Market data ingestion has stopped"
+          description: "No market data messages have been processed in the last 5 minutes."
+          impact: "Trading signals will become stale, affecting real-time trading decisions."
+
+      - alert: HighDataLatency
+        expr: market_data_processing_latency_seconds > 1.0
+        for: 1m
+        labels:
+          severity: critical
+          component: data_processing
+        annotations:
+          summary: "Market data processing latency is high"
+          description: "Market data processing latency is {{ $value }}s, exceeding 1 second threshold."
+          impact: "Delayed signals may result in suboptimal trading decisions."
+
+      - alert: DataQualityScoreLow
+        expr: data_quality_score < 75
+        for: 5m
+        labels:
+          severity: warning
+          component: data_quality
+        annotations:
+          summary: "Data quality score is low"
+          description: "Overall data quality score is {{ $value }}, below 75% threshold."
+
+      - alert: MissingMarketData
+        expr: increase(market_data_missing_symbols_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: data_completeness
+        annotations:
+          summary: "Missing market data for multiple symbols"
+          description: "{{ $value }} symbols are missing market data in the last 10 minutes."
+
+  # Trading Signals Alerts
+  - name: trading_signals
+    rules:
+      - alert: SignalGenerationSlow
+        expr: rate(trading_signals_generated_total[5m]) < 10
+        for: 3m
+        labels:
+          severity: warning
+          component: signal_generation
+        annotations:
+          summary: "Signal generation rate is low"
+          description: "Only {{ $value }} signals generated per minute, below 10 signals/min threshold."
+
+      - alert: HighRiskSignalsDetected
+        expr: increase(trading_signals_high_risk_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: risk_management
+        annotations:
+          summary: "High number of high-risk signals detected"
+          description: "{{ $value }} high-risk signals detected in the last 5 minutes."
+
+      - alert: SignalValidationFailed
+        expr: rate(trading_signals_validation_failed_total[5m]) / rate(trading_signals_generated_total[5m]) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: signal_validation
+        annotations:
+          summary: "High signal validation failure rate"
+          description: "{{ $value | humanizePercentage }} of signals are failing validation."
+
+  # Infrastructure Alerts
+  - name: infrastructure
+    rules:
+      - alert: KafkaConsumerLag
+        expr: kafka_consumer_lag_sum > 10000
+        for: 5m
+        labels:
+          severity: warning
+          component: messaging
+        annotations:
+          summary: "High Kafka consumer lag"
+          description: "Kafka consumer lag is {{ $value }} messages for topic {{ $labels.topic }}."
+
+      - alert: KafkaTopicPartitionOffline
+        expr: kafka_topic_partition_replicas - kafka_topic_partition_in_sync_replicas > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: messaging
+        annotations:
+          summary: "Kafka partition is out of sync"
+          description: "Topic {{ $labels.topic }} partition {{ $labels.partition }} has out-of-sync replicas."
+
+      - alert: DatabaseConnectionsHigh
+        expr: postgres_stat_database_numbackends > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High number of database connections"
+          description: "Database {{ $labels.datname }} has {{ $value }} active connections."
+
+      - alert: DatabaseQueryTimeHigh
+        expr: rate(postgres_stat_database_blk_read_time[5m]) / rate(postgres_stat_database_blks_read[5m]) > 100
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database query time is high"
+          description: "Average query time is {{ $value }}ms for database {{ $labels.datname }}."
+
+      - alert: RedisMemoryUsageHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis memory usage is {{ $value | humanizePercentage }} of available memory."
+
+  # System Resource Alerts
+  - name: system_resources
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value }}% on {{ $labels.instance }}."
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value }}% on {{ $labels.instance }}."
+
+      - alert: DiskSpaceRunningLow
+        expr: (1 - (node_filesystem_avail_bytes / node_filesystem_size_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Disk space running low on {{ $labels.instance }}"
+          description: "Disk usage is {{ $value }}% on {{ $labels.instance }} ({{ $labels.mountpoint }})."
+
+      - alert: HighNetworkErrors
+        expr: rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: network
+        annotations:
+          summary: "High network errors on {{ $labels.instance }}"
+          description: "Network error rate is {{ $value }} errors/sec on {{ $labels.instance }}."
+
+  # Application Performance Alerts  
+  - name: application_performance
+    rules:
+      - alert: ProcessingBacklogHigh
+        expr: processing_queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: processing
+        annotations:
+          summary: "High processing backlog"
+          description: "Processing queue depth is {{ $value }} items for {{ $labels.service }}."
+
+      - alert: NotificationDeliveryFailed
+        expr: rate(notification_delivery_failed_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: notifications
+        annotations:
+          summary: "High notification delivery failure rate"
+          description: "Notification delivery failure rate is {{ $value }} failures/sec."
+
+      - alert: UserSessionErrors
+        expr: rate(user_session_errors_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+          component: user_management
+        annotations:
+          summary: "High user session error rate"
+          description: "User session error rate is {{ $value }} errors/sec."
+
+  # Business Logic Alerts
+  - name: business_logic
+    rules:
+      - alert: TradingVolumeAnomaly
+        expr: abs((trading_volume - avg_over_time(trading_volume[24h])) / stddev_over_time(trading_volume[24h])) > 3
+        for: 15m
+        labels:
+          severity: warning
+          component: business_analytics
+        annotations:
+          summary: "Trading volume anomaly detected"
+          description: "Current trading volume is {{ $value }} standard deviations from the 24-hour average."
+
+      - alert: SignalAccuracyDropped
+        expr: signal_accuracy_ratio < 0.7
+        for: 30m
+        labels:
+          severity: warning
+          component: signal_quality
+        annotations:
+          summary: "Signal accuracy has dropped"
+          description: "Signal accuracy is {{ $value | humanizePercentage }}, below 70% threshold."
+
+  # Security Alerts
+  - name: security
+    rules:
+      - alert: UnauthorizedAPIAccess
+        expr: rate(http_requests_total{status="401"}[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High rate of unauthorized API access attempts"
+          description: "{{ $value }} unauthorized access attempts per second detected."
+
+      - alert: APIRateLimitExceeded
+        expr: rate(http_requests_total{status="429"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "API rate limit frequently exceeded"
+          description: "{{ $value }} rate limit exceeded responses per second."

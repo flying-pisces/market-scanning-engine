@@ -1,0 +1,547 @@
+# CI/CD Configuration for Risk Scoring System Tests
+# Author: Claude Code (QA Engineer)
+# 
+# This configuration can be adapted for different CI systems:
+# - GitHub Actions (.github/workflows/)
+# - GitLab CI (.gitlab-ci.yml)  
+# - Jenkins (Jenkinsfile)
+# - Azure DevOps (azure-pipelines.yml)
+
+# GitHub Actions Configuration Example
+name: Risk Scoring System Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'data_models/**'
+      - 'tests/**'
+      - 'requirements.txt'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'data_models/**'
+      - 'tests/**'
+      - 'requirements.txt'
+  schedule:
+    # Run full test suite nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_categories:
+        description: 'Test categories to run (comma-separated)'
+        required: false
+        default: 'unit,integration,performance'
+        type: choice
+        options:
+        - 'unit'
+        - 'integration' 
+        - 'performance'
+        - 'stress'
+        - 'accuracy'
+        - 'unit,integration'
+        - 'unit,integration,performance'
+        - 'all'
+
+env:
+  PYTHON_VERSION: '3.9'
+  POETRY_VERSION: '1.4.2'
+  TEST_TIMEOUT: 3600  # 1 hour timeout
+
+jobs:
+  # ============================================================================
+  # UNIT TESTS - Fast, isolated component tests
+  # ============================================================================
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.cache/pypoetry
+        key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt', '**/pyproject.toml') }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tests/requirements.txt
+    
+    - name: Run unit tests
+      run: |
+        cd tests
+        python test_framework.py --categories unit --output-dir ../test-results
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: unit-test-results
+        path: test-results/
+        retention-days: 30
+    
+    - name: Publish test summary
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: Unit Tests
+        path: 'test-results/*_results.json'
+        reporter: java-junit
+        fail-on-error: true
+
+  # ============================================================================
+  # INTEGRATION TESTS - Cross-component functionality
+  # ============================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: unit-tests
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.cache/pypoetry
+        key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt', '**/pyproject.toml') }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tests/requirements.txt
+    
+    - name: Run integration tests
+      run: |
+        cd tests
+        python test_framework.py --categories integration --output-dir ../test-results
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: integration-test-results
+        path: test-results/
+        retention-days: 30
+
+  # ============================================================================
+  # PERFORMANCE TESTS - Latency and throughput validation
+  # ============================================================================
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: unit-tests
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.cache/pypoetry
+        key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt', '**/pyproject.toml') }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tests/requirements.txt
+    
+    - name: Configure system for performance tests
+      run: |
+        # Disable CPU frequency scaling for consistent performance
+        echo 'performance' | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+        # Set high priority for test process
+        echo 'vm.swappiness=1' | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p
+    
+    - name: Run performance tests
+      run: |
+        cd tests
+        python test_framework.py --categories performance --output-dir ../test-results
+    
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: performance-test-results
+        path: test-results/
+        retention-days: 30
+    
+    - name: Performance regression check
+      run: |
+        # Compare with baseline performance metrics (if available)
+        if [ -f baseline_performance.json ]; then
+          python tests/check_performance_regression.py test-results/ baseline_performance.json
+        fi
+
+  # ============================================================================
+  # STRESS TESTS - Edge cases and system limits (nightly only)
+  # ============================================================================
+  stress-tests:
+    name: Stress Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [unit-tests, integration-tests]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tests/requirements.txt
+    
+    - name: Configure system resources
+      run: |
+        # Increase system limits for stress testing
+        ulimit -n 65536
+        echo 'fs.file-max = 100000' | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p
+    
+    - name: Run stress tests
+      run: |
+        cd tests
+        python test_framework.py --categories stress --output-dir ../test-results
+    
+    - name: Upload stress test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: stress-test-results
+        path: test-results/
+        retention-days: 30
+
+  # ============================================================================
+  # ACCURACY TESTS - Historical validation (nightly only)
+  # ============================================================================
+  accuracy-tests:
+    name: Accuracy Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: [unit-tests, integration-tests]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tests/requirements.txt
+    
+    - name: Download test data (if needed)
+      run: |
+        # Download historical market data for accuracy tests
+        if [ -f tests/download_test_data.py ]; then
+          python tests/download_test_data.py
+        fi
+    
+    - name: Run accuracy tests
+      run: |
+        cd tests
+        python test_framework.py --categories accuracy --output-dir ../test-results
+    
+    - name: Upload accuracy results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: accuracy-test-results
+        path: test-results/
+        retention-days: 30
+
+  # ============================================================================
+  # DEPLOYMENT GATE - Aggregate results and make deployment decision
+  # ============================================================================
+  deployment-gate:
+    name: Deployment Gate
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, performance-tests]
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download all test results
+      uses: actions/download-artifact@v3
+      with:
+        path: all-test-results/
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tests/requirements.txt
+    
+    - name: Aggregate test results
+      run: |
+        python tests/aggregate_results.py all-test-results/ deployment-report.json
+    
+    - name: Make deployment decision
+      id: deployment
+      run: |
+        DECISION=$(python tests/deployment_decision.py deployment-report.json)
+        echo "decision=$DECISION" >> $GITHUB_OUTPUT
+        echo "Deployment Decision: $DECISION"
+    
+    - name: Update deployment status
+      if: github.ref == 'refs/heads/main'
+      run: |
+        # Update deployment status in external system
+        curl -X POST "${{ secrets.DEPLOYMENT_WEBHOOK_URL }}" \
+          -H "Authorization: Bearer ${{ secrets.DEPLOYMENT_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -d "{\"status\": \"${{ steps.deployment.outputs.decision }}\", \"commit\": \"${{ github.sha }}\"}"
+    
+    - name: Fail if deployment blocked
+      if: contains(steps.deployment.outputs.decision, 'BLOCK')
+      run: |
+        echo "Deployment blocked due to test failures"
+        exit 1
+    
+    - name: Upload final report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: deployment-report
+        path: deployment-report.json
+        retention-days: 90
+
+  # ============================================================================
+  # SECURITY SCAN - Static analysis and dependency check
+  # ============================================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install security tools
+      run: |
+        pip install safety bandit semgrep
+    
+    - name: Check dependencies for vulnerabilities
+      run: |
+        pip install -r tests/requirements.txt
+        safety check
+    
+    - name: Run static security analysis
+      run: |
+        bandit -r data_models/ -f json -o security-report.json || true
+        
+    - name: Upload security report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-report
+        path: security-report.json
+        retention-days: 30
+
+# ============================================================================
+# GitLab CI Configuration Example
+# ============================================================================
+# 
+# stages:
+#   - test-unit
+#   - test-integration  
+#   - test-performance
+#   - test-stress
+#   - deploy-gate
+# 
+# variables:
+#   PYTHON_VERSION: "3.9"
+#   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+# 
+# cache:
+#   paths:
+#     - .cache/pip/
+#     - venv/
+# 
+# before_script:
+#   - python -V
+#   - pip install virtualenv
+#   - virtualenv venv
+#   - source venv/bin/activate
+#   - pip install -r tests/requirements.txt
+# 
+# unit-tests:
+#   stage: test-unit
+#   script:
+#     - cd tests
+#     - python test_framework.py --categories unit --output-dir ../test-results
+#   artifacts:
+#     reports:
+#       junit: test-results/*_results.xml
+#     paths:
+#       - test-results/
+#     expire_in: 30 days
+#   coverage: '/TOTAL.*\s+(\d+%)$/'
+#   
+# integration-tests:
+#   stage: test-integration
+#   script:
+#     - cd tests  
+#     - python test_framework.py --categories integration --output-dir ../test-results
+#   artifacts:
+#     paths:
+#       - test-results/
+#     expire_in: 30 days
+#   dependencies:
+#     - unit-tests
+# 
+# performance-tests:
+#   stage: test-performance
+#   script:
+#     - cd tests
+#     - python test_framework.py --categories performance --output-dir ../test-results
+#   artifacts:
+#     paths:
+#       - test-results/
+#     expire_in: 30 days
+#   dependencies:
+#     - unit-tests
+#   only:
+#     - main
+#     - develop
+# 
+# deployment-gate:
+#   stage: deploy-gate
+#   script:
+#     - python tests/deployment_decision.py test-results/
+#   dependencies:
+#     - unit-tests
+#     - integration-tests
+#     - performance-tests
+#   only:
+#     - main
+
+# ============================================================================
+# Jenkins Pipeline Configuration Example  
+# ============================================================================
+#
+# pipeline {
+#     agent any
+#     
+#     environment {
+#         PYTHON_VERSION = '3.9'
+#     }
+#     
+#     stages {
+#         stage('Setup') {
+#             steps {
+#                 sh 'python -m pip install --upgrade pip'
+#                 sh 'pip install -r tests/requirements.txt'
+#             }
+#         }
+#         
+#         stage('Unit Tests') {
+#             steps {
+#                 sh 'cd tests && python test_framework.py --categories unit --output-dir ../test-results'
+#             }
+#             post {
+#                 always {
+#                     archiveArtifacts artifacts: 'test-results/**', fingerprint: true
+#                     publishTestResults testResultsPattern: 'test-results/*_results.xml'
+#                 }
+#             }
+#         }
+#         
+#         stage('Integration Tests') {
+#             steps {
+#                 sh 'cd tests && python test_framework.py --categories integration --output-dir ../test-results'
+#             }
+#         }
+#         
+#         stage('Performance Tests') {
+#             when {
+#                 anyOf {
+#                     branch 'main'
+#                     branch 'develop'
+#                 }
+#             }
+#             steps {
+#                 sh 'cd tests && python test_framework.py --categories performance --output-dir ../test-results'
+#             }
+#         }
+#         
+#         stage('Deployment Gate') {
+#             steps {
+#                 script {
+#                     def decision = sh(script: 'python tests/deployment_decision.py test-results/', returnStdout: true).trim()
+#                     if (decision.contains('BLOCK')) {
+#                         error("Deployment blocked: ${decision}")
+#                     }
+#                     currentBuild.description = decision
+#                 }
+#             }
+#         }
+#     }
+#     
+#     post {
+#         always {
+#             cleanWs()
+#         }
+#         failure {
+#             emailext(
+#                 subject: "Risk Scoring Tests Failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+#                 body: "Test failures detected. Check console output: ${env.BUILD_URL}",
+#                 to: "${env.CHANGE_AUTHOR_EMAIL}"
+#             )
+#         }
+#     }
+# }
