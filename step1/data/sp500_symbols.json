@@ -1,0 +1,16 @@
+{
+  "description": "Top 100 S&P 500 stocks by market cap for Step 1",
+  "last_updated": "2025-01-15",
+  "symbols": [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK.B", "V", "JNJ",
+    "JPM", "WMT", "PG", "MA", "UNH", "HD", "DIS", "BAC", "ADBE", "CRM",
+    "NFLX", "PFE", "KO", "PEP", "TMO", "CSCO", "ABT", "NKE", "CVX", "ABBV",
+    "ACN", "MRK", "COST", "LLY", "WFC", "DHR", "AVGO", "TXN", "VZ", "NEE",
+    "MDT", "UNP", "INTC", "T", "QCOM", "PM", "HON", "UPS", "IBM", "BMY",
+    "AMGN", "RTX", "LIN", "AMD", "CAT", "GS", "SBUX", "INTU", "BLK", "CVS",
+    "BA", "AXP", "GILD", "CHTR", "NOW", "ISRG", "TJX", "SPGI", "MDLZ", "ZTS",
+    "MMM", "PLD", "MO", "BKNG", "TMUS", "ADP", "LMT", "CB", "SYK", "LRCX",
+    "DE", "CI", "C", "SO", "DUK", "FISV", "CL", "REGN", "SHW", "APD",
+    "ETN", "FIS", "BSX", "HUM", "EQIX", "CME", "VRTX", "CCI", "AON", "MU"
+  ]
+}

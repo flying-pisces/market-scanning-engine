@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-09-15T18:55:27.064688",
+  "scan_time_seconds": 9.73,
+  "symbols_scanned": 100,
+  "symbols_with_data": 0,
+  "data_quality_score": 0.0,
+  "signals_generated": 0,
+  "buy_signals": 0,
+  "sell_signals": 0,
+  "top_signals": [],
+  "all_signals": [],
+  "errors": []
+}
